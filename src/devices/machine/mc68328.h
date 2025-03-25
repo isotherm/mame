@@ -742,7 +742,7 @@ protected:
 	virtual timer_regs &get_timer_regs(int timer) = 0;
 	virtual u32 get_timer_int(int timer) = 0;
 	template<int Timer> u32 get_timer_frequency();
-	template<int Timer> void update_gptimer_state();
+	template<int Timer> void update_gptimer_state(bool restart);
 	template<int Timer> TIMER_CALLBACK_MEMBER(timer_tick);
 
 	virtual void lcd_update_info() = 0;
