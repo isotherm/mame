@@ -2665,57 +2665,43 @@ u32 mc68328_base_device::get_timer_frequency()
 }
 
 template <int Timer>
-void mc68328_base_device::update_gptimer_state()
+void mc68328_base_device::update_gptimer_state(bool restart)
 {
 	timer_regs &regs = get_timer_regs(Timer);
 	emu_timer *timer = get_timer(Timer);
-	if (BIT(regs.tctl, TCTL_TEN_BIT) && (regs.tctl & TCTL_CLKSOURCE) > TCTL_CLKSOURCE_STOP)
+
+	if (restart)
 	{
-		if ((regs.tctl & TCTL_CLKSOURCE) == TCTL_CLKSOURCE_TIN || regs.tcmp == 0)
-		{
-			timer->adjust(attotime::never);
-		}
-		else
-		{
-			timer->adjust(attotime::from_hz(get_timer_frequency<Timer>()));
-		}
+		regs.tcn = 0x0000;
 	}
-	else
+
+	attotime period = attotime::never;
+	u32 frequency = get_timer_frequency<Timer>();
+	if (BIT(regs.tctl, TCTL_TEN_BIT) && frequency > 0)
 	{
-		timer->adjust(attotime::never);
+		if (!restart)
+		{
+			regs.tcn += (u16)timer->elapsed().as_ticks(frequency);
+		}
+		period = attotime::from_ticks(regs.tcmp - regs.tcn, frequency);
 	}
+	timer->adjust(period);
 }
 
 template <int Timer>
 TIMER_CALLBACK_MEMBER(mc68328_base_device::timer_tick)
 {
 	timer_regs &regs = get_timer_regs(Timer);
-	emu_timer *timer = get_timer(Timer);
 
-	u32 frequency = get_timer_frequency<Timer>();
-	if (frequency > 0)
-	{
-		attotime period = attotime::from_hz(frequency);
-		timer->adjust(period);
-	}
-	else
-	{
-		timer->adjust(attotime::never);
-	}
+	regs.tcn = regs.tcmp;
+	regs.tstat |= TSTAT_COMP;
 
-	regs.tcn++;
-	if (regs.tcn == regs.tcmp)
-	{
-		regs.tstat |= TSTAT_COMP;
-		if ((regs.tctl & TCTL_FRR) == TCTL_FRR_RESTART)
-		{
-			regs.tcn = 0x0000;
-		}
+	bool restart = ((regs.tctl & TCTL_FRR) == TCTL_FRR_RESTART);
+	update_gptimer_state<Timer>(restart);
 
-		if ((regs.tctl & TCTL_IRQEN) == TCTL_IRQEN_ENABLE)
-		{
-			set_interrupt_line(get_timer_int(Timer), 1);
-		}
+	if ((regs.tctl & TCTL_IRQEN) == TCTL_IRQEN_ENABLE)
+	{
+		set_interrupt_line(get_timer_int(Timer), 1);
 	}
 }
 
@@ -2724,16 +2710,12 @@ void mc68328_base_device::tctl_w(u16 data) // 0x600, 0x60c
 {
 	timer_regs &regs = get_timer_regs(Timer);
 	LOGMASKED(LOG_TIMERS, "%s: tctl_w<%d>: TCTL%d = %04x\n", machine().describe_context(), Timer, Timer + 1, data);
-	const u16 old_tctl = regs.tctl;
-	regs.tctl = data;
-
-	const bool old_enable = BIT(old_tctl, TCTL_TEN_BIT);
-	const bool new_enable = BIT(regs.tctl, TCTL_TEN_BIT);
-	if (!old_enable && new_enable)
+	if (regs.tcn != data)
 	{
-		regs.tcn = 0x0000;
+		bool restart = (BIT(regs.tctl, TCTL_TEN_BIT) != BIT(data, TCTL_TEN_BIT));
+		regs.tctl = data;
+		update_gptimer_state<Timer>(restart);
 	}
-	update_gptimer_state<Timer>();
 }
 
 template <int Timer>
@@ -2749,8 +2731,11 @@ void mc68328_base_device::tprer_w(u16 data) // 0x602, 0x60e
 {
 	timer_regs &regs = get_timer_regs(Timer);
 	LOGMASKED(LOG_TIMERS, "%s: tprer_w<%d>: TPRER%d = %04x\n", machine().describe_context(), Timer, Timer + 1, data);
-	regs.tprer = data;
-	update_gptimer_state<Timer>();
+	if (regs.tprer != data)
+	{
+		regs.tprer = data;
+		update_gptimer_state<Timer>(false);
+	}
 }
 
 template <int Timer>
@@ -2766,8 +2751,11 @@ void mc68328_base_device::tcmp_w(u16 data) // 0x604, 0x610
 {
 	timer_regs &regs = get_timer_regs(Timer);
 	LOGMASKED(LOG_TIMERS, "%s: tcmp_w<%d>: TCMP%d = %04x\n", machine().describe_context(), Timer, Timer + 1, data);
-	regs.tcmp = data;
-	update_gptimer_state<Timer>();
+	if (regs.tcmp != data)
+	{
+		regs.tcmp = data;
+		update_gptimer_state<Timer>(false);
+	}
 }
 
 template <int Timer>
@@ -2801,9 +2789,14 @@ void mc68328_base_device::tcn_w(u16 data) // 0x608, 0x614
 template <int Timer>
 u16 mc68328_base_device::tcn_r() // 0x608, 0x614
 {
+	// Calculate the counter value on the fly. It is only updated on compare events.
 	timer_regs &regs = get_timer_regs(Timer);
-	LOGMASKED(LOG_TIMERS, "%s: tcn_r: TCN%d: %04x\n", machine().describe_context(), Timer + 1, regs.tcn);
-	return regs.tcn;
+	emu_timer *timer = get_timer(Timer);
+	attotime elapsed = timer->elapsed();
+	u32 frequency = get_timer_frequency<Timer>();
+	u16 counter = regs.tcn + elapsed.as_ticks(frequency);
+	LOGMASKED(LOG_TIMERS, "%s: tcn_r: TCN%d: %04x\n", machine().describe_context(), Timer + 1, counter);
+	return counter;
 }
 
 template <int Timer>
